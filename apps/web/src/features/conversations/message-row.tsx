@@ -156,6 +156,31 @@ export function clockLabel(
   }).format(new Date(value));
 }
 
+/**
+ * The full date and time a message was sent at, down to the second, in `timeZone`; the same
+ * shape as {@link clockLabel} so a caller passes the same four arguments. The row shows
+ * `clockLabel` (hour and minute only), which hides the day; this is what its hover tooltip
+ * reveals. Empty without a `locale`, matching `clockLabel`.
+ */
+export function fullLabel(
+  value: Date | string,
+  locale?: string,
+  timeFormat: TimeFormat | null = null,
+  timeZone?: string,
+): string {
+  if (!locale) return "";
+  return dateTimeFormat(locale, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: hour12For(timeFormat),
+    timeZone,
+  }).format(new Date(value));
+}
+
 /** Whether two consecutive messages collapse into one visual group. */
 export function groupsWithPrevious(
   message: MessageView,
@@ -838,12 +863,14 @@ export const MessageRow = memo(function MessageRow({
           <Tooltip title={message.body}>
             <span className="min-w-0 flex-1 truncate">{message.body}</span>
           </Tooltip>
-          <time
-            dateTime={new Date(message.createdAt).toISOString()}
-            className="shrink-0 tabular-nums opacity-0 group-hover/message:opacity-100"
-          >
-            {clockLabel(message.createdAt, dateLocale, timeFormat, timeZone)}
-          </time>
+          <Tooltip title={fullLabel(message.createdAt, dateLocale, timeFormat, timeZone)}>
+            <time
+              dateTime={new Date(message.createdAt).toISOString()}
+              className="shrink-0 tabular-nums opacity-0 group-hover/message:opacity-100"
+            >
+              {clockLabel(message.createdAt, dateLocale, timeFormat, timeZone)}
+            </time>
+          </Tooltip>
         </div>
       </li>
     );
@@ -868,12 +895,14 @@ export const MessageRow = memo(function MessageRow({
       >
         <div className="flex w-9 shrink-0 items-start justify-center">
           {grouped ? (
-            <time
-              dateTime={new Date(message.createdAt).toISOString()}
-              className="mt-0.5 text-xs text-quaternary tabular-nums opacity-0 group-hover/message:opacity-100 group-focus-within/message:opacity-100"
-            >
-              {clockLabel(message.createdAt, dateLocale, timeFormat, timeZone)}
-            </time>
+            <Tooltip title={fullLabel(message.createdAt, dateLocale, timeFormat, timeZone)}>
+              <time
+                dateTime={new Date(message.createdAt).toISOString()}
+                className="mt-0.5 text-xs text-quaternary tabular-nums opacity-0 group-hover/message:opacity-100 group-focus-within/message:opacity-100"
+              >
+                {clockLabel(message.createdAt, dateLocale, timeFormat, timeZone)}
+              </time>
+            </Tooltip>
           ) : openableAgentId && onOpenAgentProfile ? (
             <AgentHoverCard
               agentId={openableAgentId}
@@ -908,12 +937,14 @@ export const MessageRow = memo(function MessageRow({
                 <AgentModelLabel agentId={message.senderAgentId} seenAt={message.createdAt} />
               )}
               {deleted && <DeletedAgentBadge />}
-              <time
-                dateTime={new Date(message.createdAt).toISOString()}
-                className="shrink-0 text-xs text-tertiary tabular-nums"
-              >
-                {clockLabel(message.createdAt, dateLocale, timeFormat, timeZone)}
-              </time>
+              <Tooltip title={fullLabel(message.createdAt, dateLocale, timeFormat, timeZone)}>
+                <time
+                  dateTime={new Date(message.createdAt).toISOString()}
+                  className="shrink-0 text-xs text-tertiary tabular-nums"
+                >
+                  {clockLabel(message.createdAt, dateLocale, timeFormat, timeZone)}
+                </time>
+              </Tooltip>
             </p>
           )}
           {message.actionCard ? (
@@ -1149,12 +1180,16 @@ export const MessageRow = memo(function MessageRow({
                       <span className="min-w-0 truncate text-sm font-semibold text-primary">
                         {displayName}
                       </span>
-                      <time
-                        dateTime={new Date(message.createdAt).toISOString()}
-                        className="shrink-0 text-xs text-tertiary tabular-nums"
+                      <Tooltip
+                        title={fullLabel(message.createdAt, dateLocale, timeFormat, timeZone)}
                       >
-                        {clockLabel(message.createdAt, dateLocale, timeFormat, timeZone)}
-                      </time>
+                        <time
+                          dateTime={new Date(message.createdAt).toISOString()}
+                          className="shrink-0 text-xs text-tertiary tabular-nums"
+                        >
+                          {clockLabel(message.createdAt, dateLocale, timeFormat, timeZone)}
+                        </time>
+                      </Tooltip>
                     </p>
                     <p className="line-clamp-2 text-sm leading-5 text-secondary [overflow-wrap:anywhere]">
                       {messagePlainText(message, channelNames)}
