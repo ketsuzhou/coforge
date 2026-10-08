@@ -55,6 +55,29 @@ module: its file and single responsibility. Update it before adding or reorganiz
   product (manifests, `active.json`, `installation.json`, receipts,
   `__lifecycle` output, lock, service names, paths). Tests in
   `src/contract/tests.rs`.
+- `src/clock.rs`: the clock and sleep port the bounded waits run through (virtual in tests).
+- `src/service.rs`: OS service control of the Computer supervisor: state (not installed, stopped,
+  running with the manager's pid), stop (waits until the manager has dropped it), start (waits
+  for a process). One backend per manager in `src/service/` behind the `CommandRunner` port.
+- `src/service/port.rs`: the `CommandRunner` port and `SystemRunner`, which runs a manager tool
+  with a bound and kills it at the deadline.
+- `src/service/error.rs`: `ServiceError`, each failure worded with what to run next.
+- `src/service/launchd.rs`: the macOS backend, `launchctl` in the `gui/<uid>` domain.
+- `src/service/systemd.rs`: the Linux backend, `systemctl --user`.
+- `src/service/windows_task.rs`: the Windows backend, the scheduled task through `schtasks` and
+  `Get-ScheduledTask`.
+- `src/service/fakes.rs`: a scripted `CommandRunner` for the backend tests.
+- `src/processes.rs`: the processes of the installed product executable: identity (pid, start
+  time, executable), enumeration, and the SIGTERM, SIGKILL, verify-dead escalation after the
+  manager's stop. One `ProcessTable` adapter per OS in `src/processes/`; the caller is excluded.
+- `src/processes/linux.rs`: the Linux `ProcessTable`, read from `/proc`.
+- `src/processes/proc_stat.rs`: parsing `/proc/<pid>/stat` and the `exe` link; compiled on every
+  platform under test.
+- `src/processes/macos.rs`: the macOS `ProcessTable`, through libproc.
+- `src/processes/windows.rs`: the Windows `ProcessTable`, through Toolhelp and process handles.
+- `src/processes/signals.rs`: SIGTERM and SIGKILL to one pid (Unix).
+- `src/processes/fakes.rs`: a process table that plays out exits, kills, zombies, and pid reuse
+  on the virtual clock.
 - `src/test_support.rs`: test-only helpers shared by the modules' tests: a
   scratch directory, a loopback HTTP server, a tiny release tree, and runners
   that repeat a test in a child process, killed after `CHILD_DEADLINE` (30 s).

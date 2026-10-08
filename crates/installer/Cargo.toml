@@ -23,3 +23,10 @@ ureq = { version = "3", default-features = false, features = ["rustls"] }
 # two versions of a crate. Move both together.
 [target."cfg(windows)".dependencies]
 junction = { version = "=1.2.0", default-features = false }
+# Process inspection and termination (src/processes). 0.52 is the version ring uses; deny.toml
+# denies two, so this moves with junction and ring, never alone.
+windows-sys = { version = "0.52", default-features = false, features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] }
+
+# Signals and the macOS process table (src/processes). Already in the graph through ring.
+[target."cfg(unix)".dependencies]
+libc = { version = "0.2", default-features = false }

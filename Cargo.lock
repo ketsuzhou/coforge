@@ -58,11 +58,13 @@ dependencies = [
  "flate2",
  "junction",
  "lexopt",
+ "libc",
  "rusqlite",
  "serde",
  "serde_json",
  "sha2",
  "ureq",
+ "windows-sys",
 ]
 
 [[package]]
