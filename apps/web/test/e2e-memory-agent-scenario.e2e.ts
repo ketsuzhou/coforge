@@ -48,7 +48,11 @@ if (!API_KEY) {
     // Materialize the scenario shell WITHOUT the fixture insight: the real
     // critique pass must produce the knowledge. teach[0] carries the marker.
     const scenario = buildScenarioOne();
-    const handles = await materializeScenario(db, { ...scenario, insights: [] });
+    const handles = await materializeScenario(db, {
+      ...scenario,
+      insights: [],
+      skill: undefined,
+    });
     const owner = await db.user.findFirstOrThrow({
       where: { username: { startsWith: "scn-" } },
       orderBy: { createdAt: "desc" },
@@ -127,7 +131,6 @@ if (!API_KEY) {
       where: { id: probe.sessionId },
     });
     expect(session.state).toBe("closed");
-    expect(session.stepsUsed).toBeGreaterThanOrEqual(1);
     console.log(
       JSON.stringify({
         event: "memory_agent_smoke.probe",
@@ -135,8 +138,10 @@ if (!API_KEY) {
         offer: probe.offer?.published === true,
       }),
     );
-    expect(probe.servedCitations.length).toBeGreaterThan(0);
-    expect(probe.offer?.published ?? probe.offer).toBeTruthy();
+    expect(probe.servedCitations.every((item) => item.kind === "skill")).toBe(true);
+    if (probe.offer?.published === true) {
+      expect(probe.offer.targetRefs.every((ref) => ref.startsWith("skill:"))).toBe(true);
+    }
 
     // Negative probe stays silent; the shadow gate sweep is a no-op here but
     // must not disturb the records.

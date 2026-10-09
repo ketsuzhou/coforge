@@ -281,7 +281,7 @@ _Avoid_: chat log, channel archive, imported method name
 
 **Memory Episode**:
 One admitted, immutable record of a completed slice of PublicChannel collaboration — a Task's discussion window or a channel quiet-window — carrying its participants snapshot and an inferred outcome. It is evidence, not interpretation.
-_Avoid_: transcript, log window, Memory Insight
+_Avoid_: transcript, log window, Memory Insight, Session commit
 
 **Memory Insight**:
 A versioned rule or lesson about how this Workspace's collaboration goes, tied to the Memory Episodes supporting or contradicting it, with a score derived from append-only adjustments. It is team knowledge, not an executable skill.

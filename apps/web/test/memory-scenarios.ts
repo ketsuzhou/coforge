@@ -27,9 +27,9 @@ import {
  * protocol, offer discipline) runs for real; the LLM's judgment is out of
  * scope here by design — that is the value layer's business.
  *
- * Markers are unique tokens (mk-…) embedded in both the teaching episode body
- * and the distilled insight statement, so precision can be asserted on
- * server-side records without any reply text.
+ * Markers are unique tokens (mk-…) embedded in the teaching episode, the
+ * distilled insight, and — when a probe should recall — the skill search
+ * text. New offers cite skill revisions only.
  */
 
 export type ScenarioChannel = "main" | "other";
@@ -63,9 +63,9 @@ export type ScenarioSkill = {
 };
 
 export type ScenarioProbeExpect = {
-  /** Markers the session must serve (recall) and the offer must carry (precision). */
+  /** Markers that must show up in newly served citations. */
   markers: string[];
-  /** Layers the citations must cover. */
+  /** Public discovery layers the citations must cover. Episode and insight are not served. */
   layers: Array<"episode" | "insight" | "skill">;
 };
 
@@ -125,12 +125,43 @@ export function buildScenarioOne(): MemoryScenario {
       body: `Off the record, please don't record this anywhere: the staging admin password is hunter2-${m.decoy}.`,
       decoyMarker: m.decoy,
     },
+    skill: {
+      key: "rotate-db-credentials",
+      name: `Rotate credentials ${m.rotate}`,
+      kind: "step_guidance",
+      body: {
+        causal_context: {
+          facts: [
+            {
+              fact_id: "f1",
+              statement: "how often do the production database credentials rotate before the audit",
+            },
+          ],
+        },
+        branches: [
+          {
+            branch_id: "b1",
+            when: { explanation: "how often do credentials rotate before the audit" },
+            action: {
+              instructions: [
+                "database credential rotation cadence audit",
+                "Rotate production database credentials every 14 days before the quarterly audit",
+              ],
+              rationale: "stale credentials fail the audit",
+            },
+            future: { disposition: "success", critical_steps: ["rotate", "audit"] },
+          },
+        ],
+      },
+      groundedOnMarkers: [m.rotate],
+      groundedOnInsightMarker: m.rotate,
+    },
     probes: [
       {
         kind: "explicit",
         key: "s1-explicit",
         query: "how often do the production database credentials rotate before the audit",
-        expect: { markers: [m.rotate], layers: ["insight"] },
+        expect: { markers: [m.rotate], layers: ["skill"] },
       },
       {
         kind: "negative",
@@ -150,7 +181,7 @@ export function buildScenarioTwo(): MemoryScenario {
   const m = freshMarkers<Record<"v1" | "v2", string>>(["v1", "v2"]);
   return {
     key: "s2-fact-update",
-    purpose: "a fact update retires the old value in retrieval",
+    purpose: "a fact update stays in native insight storage and leaves public discovery",
     teach: [
       {
         channel: "main",
@@ -181,7 +212,7 @@ export function buildScenarioTwo(): MemoryScenario {
         kind: "explicit",
         key: "s2-explicit",
         query: "how many nodes does the staging cluster run on weekends",
-        expect: { markers: [m.v2], layers: ["insight"] },
+        expect: { markers: [], layers: [] },
       },
     ],
   };
@@ -220,7 +251,11 @@ export function buildScenarioThree(): MemoryScenario {
       body: {
         causal_context: {
           facts: [
-            { fact_id: "f1", statement: "Deploys that skip the migration break the release" },
+            {
+              fact_id: "f1",
+              statement: `Deploys that skip the migration break the release (${m.deploy})`,
+            },
+            { fact_id: "f2", statement: `Recovery sequence ${m.fix}` },
           ],
         },
         branches: [
@@ -228,7 +263,12 @@ export function buildScenarioThree(): MemoryScenario {
             branch_id: "b1",
             when: { explanation: "a deploy touches the database schema" },
             action: {
-              instructions: ["Run the migration", "Deploy in the quiet morning window"],
+              instructions: [
+                "what went wrong with the deploy and how was it recovered",
+                "the next deploy touches the schema, what is the safe sequence",
+                "Run the migration",
+                "Deploy in the quiet morning window",
+              ],
               rationale: "skipped migrations break releases",
             },
             future: {
@@ -246,7 +286,7 @@ export function buildScenarioThree(): MemoryScenario {
         kind: "explicit",
         key: "s3-explicit",
         query: "what went wrong with the deploy and how was it recovered",
-        expect: { markers: [m.deploy], layers: ["episode", "insight", "skill"] },
+        expect: { markers: [m.deploy], layers: ["skill"] },
         relation: "skills",
       },
       {
@@ -539,7 +579,6 @@ export async function runProbe(
 
   const targets: MemoryOfferTarget[] = [];
   for (const item of items) {
-    if (item.kind === "insight") targets.push({ kind: "insight", id: item.id });
     if (item.kind === "skill") targets.push({ kind: "skill", id: item.id });
   }
   if (targets.length === 0) {

@@ -10,6 +10,7 @@ import {
 import { extractInteractionLinks } from "../src/server/group-memory/memory-interactions.server";
 import { enableGroupMemory } from "../src/server/group-memory/memory-agent.server";
 import { submitAndAdmitSkillProposal } from "../src/server/group-memory/skill-proposals.server";
+import { RETIRED_FROM_MEMORY_DISCOVERY } from "../src/server/group-memory/memory-discovery-eligibility";
 import {
   closeMemoryExploration,
   exploreMemoryStep,
@@ -18,12 +19,10 @@ import {
 } from "../src/server/group-memory/memory-exploration.server";
 
 /**
- * Bounded Memory Exploration over provenance edges (ADR 0052-E/I, slice 4):
- * the designation fence, start replay-vs-drift, the four traversal edge
- * classes (episodeInsight across the raw↔wiki boundary, skillGrounding into
- * the skill layer, skillLineage within a lineage, interactions across
- * channels by participant identity), step budgets, close-time citation
- * grounding, and the per-operation idempotency ledger.
+ * Bounded Memory Exploration (ADR 0052-E/I, Q160-B): the designation fence,
+ * start replay-vs-drift, skill lineage hops, refusal of episode/insight
+ * anchors and of the related/collaborators relations, step budgets,
+ * close-time citation grounding, and the per-operation idempotency ledger.
  */
 
 let client: PrismaClient | undefined;
@@ -151,6 +150,9 @@ test("start is idempotent by start key; drift under the same key is a conflict",
     query: "flaky migration check before shipping",
   };
   const first = await startMemoryExploration(s.db, base);
+  expect(first.items.some((item) => item.kind === "episode" || item.kind === "insight")).toBe(
+    false,
+  );
   const replay = await startMemoryExploration(s.db, base);
   expect(replay.sessionId).toBe(first.sessionId);
   expect(replay.items.length).toBe(first.items.length);
@@ -160,7 +162,7 @@ test("start is idempotent by start key; drift under the same key is a conflict",
   );
 });
 
-test("expansion crosses layers: episode→insight (related), insight→skill and lineage (skills)", async () => {
+test("public expansion refuses episode and insight anchors and still walks skill lineage", async () => {
   const s = await setup();
   const episodeId = await s.addEpisode(
     s.channelId,
@@ -231,45 +233,43 @@ test("expansion crosses layers: episode→insight (related), insight→skill and
   });
   expect(revised.outcome).toBe("bound");
 
+  const headRevisionId = revised.outcome === "bound" ? revised.revisionId : bound.revisionId;
   const start = await startMemoryExploration(s.db, {
     workspaceId: s.workspaceId,
     agentId: s.memoryAgentId,
     startKey: "cross-1",
-    // maxResults=1 pins the start to the episode anchor only; the layers
-    // above must then be reached by the expansion steps themselves.
-    query: "we rolled back and ran them after it broke",
+    query: "Deploy with migrations",
     maxResults: 5,
   });
-  // raw → wiki: the episode anchor expands to its insight over related.
-  const related = await exploreMemoryStep(s.db, {
-    workspaceId: s.workspaceId,
-    agentId: s.memoryAgentId,
-    sessionId: start.sessionId,
-    operationId: "op-related",
-    anchor: `episode:${episodeId}`,
-    relation: "related",
-  });
-  expect(related.items.map((item) => item.citationId)).toContain(`insight:${insightId}`);
+  expect(start.items.length).toBeGreaterThan(0);
+  expect(start.items.every((item) => item.kind === "skill")).toBe(true);
+  expect(start.items.map((item) => item.id)).toContain(headRevisionId);
 
-  // wiki → skill: the insight anchor reaches the skill head over skills.
-  const skills = await exploreMemoryStep(s.db, {
-    workspaceId: s.workspaceId,
-    agentId: s.memoryAgentId,
-    sessionId: start.sessionId,
-    operationId: "op-skills",
-    anchor: `insight:${insightId}`,
-    relation: "skills",
-  });
-  const skillCitations = skills.items.filter((item) => item.kind === "skill");
-  expect(skillCitations.map((item) => item.id)).toContain(
-    revised.outcome === "bound" ? revised.revisionId : bound.revisionId,
+  await expectAppError(
+    () =>
+      exploreMemoryStep(s.db, {
+        workspaceId: s.workspaceId,
+        agentId: s.memoryAgentId,
+        sessionId: start.sessionId,
+        operationId: "op-related",
+        anchor: `episode:${episodeId}`,
+        relation: "related",
+      }),
+    RETIRED_FROM_MEMORY_DISCOVERY,
+  );
+  await expectAppError(
+    () =>
+      exploreMemoryStep(s.db, {
+        workspaceId: s.workspaceId,
+        agentId: s.memoryAgentId,
+        sessionId: start.sessionId,
+        operationId: "op-insight",
+        anchor: `insight:${insightId}`,
+        relation: "skills",
+      }),
+    RETIRED_FROM_MEMORY_DISCOVERY,
   );
 
-  // lineage: anchoring the head reaches the superseded v1.
-  const headRevisionId = revised.outcome === "bound" ? revised.revisionId : bound.revisionId;
-  // Both revisions' proposals ground in the insight, so the skills step may
-  // already serve v1 alongside the head; the lineage hop is a dedup no-op
-  // then. Assert the invariant that matters: v1 is citable in this session.
   await exploreMemoryStep(s.db, {
     workspaceId: s.workspaceId,
     agentId: s.memoryAgentId,
@@ -278,11 +278,14 @@ test("expansion crosses layers: episode→insight (related), insight→skill and
     anchor: `skill:${headRevisionId}`,
     relation: "skills",
   });
-  const servedSkills = await s.db.memoryExplorationCitation.findMany({
-    where: { sessionId: start.sessionId, kind: "skill" },
-    select: { targetId: true },
+  const served = await s.db.memoryExplorationCitation.findMany({
+    where: { sessionId: start.sessionId },
+    select: { kind: true, targetId: true },
   });
-  expect(servedSkills.map((row) => row.targetId)).toContain(bound.revisionId);
+  expect(served.some((row) => row.kind === "episode" || row.kind === "insight")).toBe(false);
+  expect(served.filter((row) => row.kind === "skill").map((row) => row.targetId)).toContain(
+    bound.revisionId,
+  );
 });
 
 test("expansion crosses channels by participant identity (collaborators)", async () => {
@@ -369,38 +372,65 @@ test("expansion crosses channels by participant identity (collaborators)", async
     query: "who owns the backup routine question",
     maxResults: 5,
   });
-  const collaborators = await exploreMemoryStep(s.db, {
-    workspaceId: s.workspaceId,
-    agentId: s.memoryAgentId,
-    sessionId: start.sessionId,
-    operationId: "op-collab",
-    anchor: `episode:${episodeA.episodeId}`,
-    relation: "collaborators",
-  });
-  expect(collaborators.items.map((item) => item.citationId)).toContain(
-    `episode:${episodeB.episodeId}`,
+  await expectAppError(
+    () =>
+      exploreMemoryStep(s.db, {
+        workspaceId: s.workspaceId,
+        agentId: s.memoryAgentId,
+        sessionId: start.sessionId,
+        operationId: "op-collab",
+        anchor: `episode:${episodeA.episodeId}`,
+        relation: "collaborators",
+      }),
+    RETIRED_FROM_MEMORY_DISCOVERY,
   );
+  expect(await s.db.memoryEpisode.findUnique({ where: { id: episodeB.episodeId } })).toBeTruthy();
 });
 
 test("budgets bound the session and the close must cite only what was served", async () => {
   const s = await setup();
-  const episodeId = await s.addEpisode(
-    s.channelId,
-    "quiet window about the quarterly key rotation cadence",
-  );
+  const needle = "quarterly key rotation cadence";
+  const skill = await s.db.learnedSkill.create({
+    data: {
+      workspaceId: s.workspaceId,
+      key: "key-rotation",
+      name: "Quarterly key rotation",
+      kind: "procedure",
+    },
+  });
+  const revision = await s.db.learnedSkillRevision.create({
+    data: {
+      workspaceId: s.workspaceId,
+      skillId: skill.id,
+      version: 1,
+      body: { instructions: ["Rotate the quarterly keys"] },
+      contentDigest: "sha256:" + "b".repeat(64),
+      searchText: needle,
+      state: "active",
+    },
+  });
+  await s.db.learnedSkill.update({
+    where: { id: skill.id },
+    data: { currentRevisionId: revision.id },
+  });
+  const citationId = `skill:${revision.id}`;
   const start = await startMemoryExploration(s.db, {
     workspaceId: s.workspaceId,
     agentId: s.memoryAgentId,
     startKey: "budget-1",
-    query: "key rotation cadence",
+    query: needle,
     maxSteps: 1,
   });
+  expect(start.items.map((item) => item.citationId)).toContain(citationId);
+  expect(start.items.some((item) => item.kind === "episode" || item.kind === "insight")).toBe(
+    false,
+  );
   await exploreMemoryStep(s.db, {
     workspaceId: s.workspaceId,
     agentId: s.memoryAgentId,
     sessionId: start.sessionId,
     operationId: "op-1",
-    anchor: `episode:${episodeId}`,
+    anchor: citationId,
   });
   await expectAppError(
     () =>
@@ -409,7 +439,7 @@ test("budgets bound the session and the close must cite only what was served", a
         agentId: s.memoryAgentId,
         sessionId: start.sessionId,
         operationId: "op-2",
-        anchor: `episode:${episodeId}`,
+        anchor: citationId,
       }),
     "gm-exploration-steps-exhausted",
   );
@@ -424,7 +454,7 @@ test("budgets bound the session and the close must cite only what was served", a
         operationId: "close-1",
         found: true,
         summary: "found it",
-        citationIds: [`episode:${crypto.randomUUID()}`],
+        citationIds: [`skill:${crypto.randomUUID()}`],
       }),
     "gm-exploration-citation-unserved",
   );
@@ -435,7 +465,7 @@ test("budgets bound the session and the close must cite only what was served", a
     operationId: "close-1",
     found: true,
     summary: "found it",
-    citationIds: [`episode:${episodeId}`],
+    citationIds: [citationId],
   });
   expect(closed.state).toBe("closed");
 
@@ -447,7 +477,7 @@ test("budgets bound the session and the close must cite only what was served", a
     operationId: "close-1",
     found: true,
     summary: "found it",
-    citationIds: [`episode:${episodeId}`],
+    citationIds: [citationId],
   });
   expect(replay.duplicate).toBe(true);
 
@@ -466,4 +496,7 @@ test("budgets bound the session and the close must cite only what was served", a
     query: "rotation cadence quarterly keys",
   });
   expect(redirected.state).toBe("active");
+  expect(redirected.items.some((item) => item.kind === "episode" || item.kind === "insight")).toBe(
+    false,
+  );
 });

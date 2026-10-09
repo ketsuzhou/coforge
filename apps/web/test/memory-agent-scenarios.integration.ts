@@ -59,7 +59,7 @@ function assertMarkersReach(
   void db;
 }
 
-test("S1 single fact: explicit probe reaches the insight with the marker; the decoy and negative probe stay disciplined", async () => {
+test("S1 single fact: public discovery serves the skill, the insight stays stored, and the decoy stays out", async () => {
   const db = getDb();
   const scenario = buildScenarioOne();
   const handles = await materializeScenario(db, scenario);
@@ -71,18 +71,27 @@ test("S1 single fact: explicit probe reaches the insight with the marker; the de
   const session = await sessionOf(db, explicit.sessionId);
   expect(session.state).toBe("closed");
   expect(session.stepsUsed).toBeGreaterThanOrEqual(1);
-  assertLayers(explicit.servedCitations, ["insight"]);
+  assertLayers(explicit.servedCitations, ["skill"]);
+  expect(
+    explicit.servedCitations.some((item) => item.kind === "episode" || item.kind === "insight"),
+  ).toBe(false);
   assertMarkersReach(explicit, db, [teachMarker]);
   expect(explicit.offer?.published).toBe(true);
+  const storedInsight = await db.memoryInsight.findUniqueOrThrow({
+    where: { id: handles.insightByMarker.get(teachMarker)! },
+  });
+  expect(storedInsight.statement).toContain(teachMarker);
 
   // The offer is delivered, not just composed: delivery row + explicit-ask record.
   if (explicit.offer?.published === true) {
+    expect(explicit.offer.targetRefs.every((ref) => ref.startsWith("skill:"))).toBe(true);
     const deliveries = await db.memoryOfferDelivery.findMany({
       where: { workspaceId: handles.workspaceId, messageId: explicit.offer.messageId },
     });
     expect(deliveries.length).toBeGreaterThanOrEqual(1);
     expect(deliveries[0]!.explicitAsk).toBe(true);
     expect(deliveries[0]!.agentId).toBe(handles.workerAgentId);
+    expect(deliveries.every((row) => row.targetKind === "skill")).toBe(true);
   }
 
   // Negative probe: execution happened, but nothing was served and no offer exists.
@@ -116,7 +125,7 @@ test("S1 single fact: explicit probe reaches the insight with the marker; the de
   expect(offers.length).toBeGreaterThan(0);
 });
 
-test("S2 fact update: the revised value is served, the superseded value never is", async () => {
+test("S2 fact update: the revision stays stored and neither insight is newly served", async () => {
   const db = getDb();
   const scenario = buildScenarioTwo();
   const handles = await materializeScenario(db, scenario);
@@ -128,44 +137,60 @@ test("S2 fact update: the revised value is served, the superseded value never is
   const oldRow = await db.memoryInsight.findUniqueOrThrow({ where: { id: oldInsightId } });
   expect(oldRow.supersededById).not.toBeNull();
 
+  const newInsightId = handles.insightByMarker.get(newMarker)!;
+  const newRow = await db.memoryInsight.findUniqueOrThrow({ where: { id: newInsightId } });
+  expect(newRow.statement).toContain(newMarker);
+  expect(newRow.supersededById).toBeNull();
+
   const probe = await runProbe(db, handles, scenario.probes[0] as never);
   const session = await sessionOf(db, probe.sessionId);
   expect(session.state).toBe("closed");
-  assertLayers(probe.servedCitations, ["insight"]);
-  assertMarkersReach(probe, db, [newMarker]);
+  expect(
+    probe.servedCitations.some((item) => item.kind === "episode" || item.kind === "insight"),
+  ).toBe(false);
+  expect(probe.offer?.published).toBe(false);
 
-  // Precision, the S2 way: the new marker reaches the served content, the old
-  // insight id is never cited anywhere in the session.
-  const servedIds = probe.servedCitations.filter((c) => c.kind === "insight").map((c) => c.id);
-  expect(servedIds).not.toContain(oldInsightId);
   const sessionCitations = await db.memoryExplorationCitation.findMany({
-    where: { sessionId: probe.sessionId, kind: "insight" },
-    select: { targetId: true, snippet: true },
+    where: { sessionId: probe.sessionId },
+    select: { kind: true, targetId: true, snippet: true },
   });
+  expect(sessionCitations.some((row) => row.kind === "insight" || row.kind === "episode")).toBe(
+    false,
+  );
   expect(sessionCitations.some((row) => row.targetId === oldInsightId)).toBe(false);
-  expect(sessionCitations.some((row) => row.snippet.includes(newMarker))).toBe(true);
   expect(sessionCitations.some((row) => row.snippet.includes(oldMarker))).toBe(false);
-  expect(probe.offer?.published).toBe(true);
+  expect(sessionCitations.some((row) => row.snippet.includes(newMarker))).toBe(false);
 });
 
-test("S3 cross-channel skill chain: episode→insight→skill walkable, cooldown suppresses, explicit ask bypasses", async () => {
+test("S3 cross-channel skill chain: the skill is discoverable, cooldown suppresses, explicit ask bypasses", async () => {
   const db = getDb();
   const scenario = buildScenarioThree();
   const handles: ScenarioHandles = await materializeScenario(db, scenario);
   expect(handles.skillRevisionId).toBeTruthy();
 
-  // Explicit probe over the skills relation: the union of start seeds and the
-  // expansion step covers all three layers.
+  // Explicit probe over the skills relation serves the skill and not the
+  // retired episode or insight layers.
   const explicit = await runProbe(db, handles, scenario.probes[0] as never);
   const session = await sessionOf(db, explicit.sessionId);
   expect(session.state).toBe("closed");
-  assertLayers(explicit.servedCitations, ["episode", "insight", "skill"]);
+  assertLayers(explicit.servedCitations, ["skill"]);
+  expect(
+    explicit.servedCitations.some((item) => item.kind === "episode" || item.kind === "insight"),
+  ).toBe(false);
   expect(explicit.offer?.published).toBe(true);
+  if (explicit.offer?.published === true) {
+    expect(explicit.offer.targetRefs.every((ref) => ref.startsWith("skill:"))).toBe(true);
+  }
 
-  // The interaction identity is real: the other-channel episode is reachable
-  // through the collaborator edge from the main-channel anchor episode.
+  // Interaction links stay in native storage. Public exploration does not
+  // return either episode.
   const deployEpisodeId = handles.episodeByMarker.get(scenario.teach[0]!.marker)!;
   const fixEpisodeId = handles.episodeByMarker.get(scenario.teach[1]!.marker)!;
+  expect(
+    explicit.servedCitations.some(
+      (item) => item.id === deployEpisodeId || item.id === fixEpisodeId,
+    ),
+  ).toBe(false);
   const links = await db.memoryInteractionLink.findMany({
     where: { workspaceId: handles.workspaceId },
     select: { fromMessageId: true, kind: true },

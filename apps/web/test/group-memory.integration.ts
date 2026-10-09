@@ -28,7 +28,7 @@ import { createTrgmSimilarityIndex } from "../src/server/group-memory/memory-sim
  * chain-summed live score, retirement at <= 0), immutable insight revisions
  * and structurally idempotent merges, lossless Interaction Link extraction
  * (three kinds, window-anchored, idempotent), the trigram similarity seam's
- * exclusion rules across episode/insight/skill seeds, and the head-pointer +
+ * skill-only seeds (episode and insight stay out; a retired skill leaves), and the head-pointer +
  * supersedes edge invariants of the LearnedSkill substrate.
  *
  * Runs via `mise run test:memory` with MEMORY_TEST_DATABASE_URL pointing at
@@ -438,7 +438,7 @@ test("interaction link extraction: three kinds, window anchor, idempotent replay
   expect(participants.length).toBeGreaterThanOrEqual(1);
 });
 
-test("similarity seam: seeds episodes, active insight heads, and active skill heads; excludes retired", async () => {
+test("similarity seam: seeds active skill heads only; episode, insight, and retired skills stay out", async () => {
   const s = await setup();
   const db = s.db;
   const index = createTrgmSimilarityIndex(db);
@@ -494,17 +494,18 @@ test("similarity seam: seeds episodes, active insight heads, and active skill he
 
   const seeds = await index.findSeeds(s.workspaceId, needle, 20);
   const kinds = seeds.map((seed) => seed.kind);
-  expect(kinds).toContain("episode");
-  expect(kinds).toContain("insight");
   expect(kinds).toContain("skill");
-  const insightSeeds = seeds.filter((seed) => seed.kind === "insight");
-  expect(insightSeeds.map((seed) => seed.id)).toContain(live);
-  expect(insightSeeds.map((seed) => seed.id)).not.toContain(retired);
+  expect(kinds).not.toContain("episode");
+  expect(kinds).not.toContain("insight");
+  expect(seeds.map((seed) => seed.id)).toContain(revision.id);
+  expect(seeds.map((seed) => seed.id)).not.toContain(live);
+  expect(seeds.map((seed) => seed.id)).not.toContain(retired);
 
   // Retire the skill head: it leaves the seed set.
   await db.learnedSkillRevision.update({ where: { id: revision.id }, data: { state: "retired" } });
   await db.learnedSkill.update({ where: { id: skill.id }, data: { currentRevisionId: null } });
   const after = await index.findSeeds(s.workspaceId, needle, 20);
+  expect(after.map((seed) => seed.id)).not.toContain(revision.id);
   expect(after.map((seed) => seed.kind)).not.toContain("skill");
 
   // Empty query seeds nothing; limit is validated.

@@ -44,6 +44,8 @@ test("the fenced wire: full tool chain, fence, idempotency, drift, and a deliver
   const handles = await materializeScenario(db, scenario);
   const principal = { workspaceId: handles.workspaceId, agentId: handles.memoryAgentId };
   const marker = scenario.teach[0]!.marker;
+  if (!handles.skillRevisionId) throw new Error("skillRevisionId missing");
+  const skillRevisionId = handles.skillRevisionId;
 
   // Fence: an ordinary Agent is refused on exploration AND offer ops.
   const ordinary = await db.agent.create({
@@ -84,8 +86,14 @@ test("the fenced wire: full tool chain, fence, idempotency, drift, and a deliver
   expect(start.status).toBe(200);
   const startBody = await start.json();
   expect(startBody.ok).toBe(true);
-  const anchor =
-    startBody.items.find((item: { kind: string }) => item.kind === "insight") ?? startBody.items[0];
+  expect(
+    startBody.items.some(
+      (item: { kind: string }) => item.kind === "episode" || item.kind === "insight",
+    ),
+  ).toBe(false);
+  expect(startBody.items.every((item: { kind: string }) => item.kind === "skill")).toBe(true);
+  const anchor = startBody.items.find((item: { id: string }) => item.id === skillRevisionId);
+  if (!anchor) throw new Error("skill seed missing");
 
   // explore — anchored on a served citation, one expansion hop.
   const explore = await post(
@@ -113,6 +121,7 @@ test("the fenced wire: full tool chain, fence, idempotency, drift, and a deliver
   );
   expect(redirect.status).toBe(200);
   const redirected = await redirect.json();
+  expect(redirected.items.every((item: { kind: string }) => item.kind === "skill")).toBe(true);
   const citations = [...startBody.items, ...redirected.items].map(
     (item: { citationId: string }) => item.citationId,
   );
@@ -130,16 +139,15 @@ test("the fenced wire: full tool chain, fence, idempotency, drift, and a deliver
   expect(submit.status).toBe(200);
   expect((await submit.json()).state).toBe("closed");
 
-  // offer — the memory agent delivers the cited insight to the worker.
-  const insightId = handles.insightByMarker.get(marker)!;
+  // offer — the memory agent delivers the skill revision to the worker.
   const offer = await post(
     {
       op: "offer",
       operationKey: "wire-offer-1",
       conversationId: handles.channelId,
       targetAgentId: handles.workerAgentId,
-      targets: [{ kind: "insight", id: insightId }],
-      body: `@worker the team rotates credentials every 14 days (${marker})`,
+      targets: [{ kind: "skill", id: skillRevisionId }],
+      body: `@worker rotate credentials with the published skill (${marker})`,
       explicitAsk: true,
     },
     principal,
@@ -196,8 +204,8 @@ test("the fenced wire: full tool chain, fence, idempotency, drift, and a deliver
       operationKey: "wire-offer-1",
       conversationId: handles.channelId,
       targetAgentId: handles.workerAgentId,
-      targets: [{ kind: "insight", id: insightId }],
-      body: `@worker the team rotates credentials every 14 days (${marker})`,
+      targets: [{ kind: "skill", id: skillRevisionId }],
+      body: `@worker rotate credentials with the published skill (${marker})`,
       explicitAsk: true,
     },
     principal,
@@ -219,8 +227,8 @@ test("the fenced wire: full tool chain, fence, idempotency, drift, and a deliver
       conversationId: handles.channelId,
       targetAgentId: handles.workerAgentId,
       targets: [
-        { kind: "insight", id: insightId },
-        { kind: "insight", id: crypto.randomUUID() },
+        { kind: "skill", id: skillRevisionId },
+        { kind: "skill", id: crypto.randomUUID() },
       ],
       body: "different shape",
       explicitAsk: true,
@@ -230,21 +238,37 @@ test("the fenced wire: full tool chain, fence, idempotency, drift, and a deliver
   expect(drifted.status).toBe(409);
   expect((await drifted.json()).errorCode).toBe("gm-offer-operation-drift");
 
-  // Unknown targets are refused before anything publishes.
+  // A new insight target is retired before it can publish, even with explicitAsk.
+  const retiredInsight = await post(
+    {
+      op: "offer",
+      operationKey: "wire-offer-insight",
+      conversationId: handles.channelId,
+      targetAgentId: handles.workerAgentId,
+      targets: [{ kind: "insight", id: crypto.randomUUID() }],
+      body: "ghost insight",
+      explicitAsk: true,
+    },
+    principal,
+  );
+  expect(retiredInsight.status).toBe(400);
+  expect((await retiredInsight.json()).errorCode).toBe("retired_from_memory_discovery");
+
+  // An unknown skill revision is still refused before anything publishes.
   const unknown = await post(
     {
       op: "offer",
       operationKey: "wire-offer-unknown",
       conversationId: handles.channelId,
       targetAgentId: handles.workerAgentId,
-      targets: [{ kind: "insight", id: crypto.randomUUID() }],
+      targets: [{ kind: "skill", id: crypto.randomUUID() }],
       body: "ghost",
       explicitAsk: true,
     },
     principal,
   );
   expect(unknown.status).toBe(404);
-  expect((await unknown.json()).errorCode).toBe("gm-offer-insight-missing");
+  expect((await unknown.json()).errorCode).toBe("gm-offer-skill-missing");
 
   // Malformed wire is rejected at the schema gate.
   const malformed = await post({ op: "offer", targets: [] }, principal);

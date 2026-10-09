@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
 import { AppError } from "../../lib/app-error";
 import type { PrismaClient, Prisma } from "../../../generated/client";
+import {
+  assertDiscoveryAnchor,
+  assertPublicExpansionClasses,
+  isRetiredFromMemoryDiscovery,
+} from "./memory-discovery-eligibility";
 import { createTrgmSimilarityIndex, type MemorySeed } from "./memory-similarity.server";
 import {
   expandMemoryNeighborhood,
@@ -71,6 +76,8 @@ export type MemoryExplorationCloseView = {
 
 const RELATION_EDGE_CLASSES: Record<MemoryExplorationRelation, MemoryExpansionEdgeClass[]> = {
   similar: ["similar"],
+  // Still nameable so a new request is refused as retired_from_memory_discovery
+  // instead of a schema error. Neither class is expanded.
   related: ["episodeInsight"],
   collaborators: ["interactions"],
   skills: ["skillGrounding", "skillLineage"],
@@ -131,10 +138,12 @@ export async function startMemoryExploration(
     return startView(db, existing);
   }
 
-  const seeds = await createTrgmSimilarityIndex(db).findSeeds(
-    input.workspaceId,
-    query,
-    Math.min(maxResults, 50),
+  const seeds = onlySkillSeeds(
+    await createTrgmSimilarityIndex(db).findSeeds(
+      input.workspaceId,
+      query,
+      Math.min(maxResults, 50),
+    ),
   );
   try {
     await db.$transaction(async (tx) => {
@@ -200,6 +209,11 @@ export async function exploreMemoryStep(
   });
 
   const outcome = await replayOrApply(db, input, requestHash, async (tx, session) => {
+    // Retired anchors and relations are refused before the unserved check, so
+    // an episode/insight citation is not reported as merely unserved.
+    assertDiscoveryAnchor(anchorNode.kind);
+    const edgeClasses = input.relation ? RELATION_EDGE_CLASSES[input.relation] : undefined;
+    if (edgeClasses) assertPublicExpansionClasses(edgeClasses);
     await assertStepBudget(session);
     const served = await tx.memoryExplorationCitation.findUnique({
       where: {
@@ -215,7 +229,6 @@ export async function exploreMemoryStep(
     const remainingResults = session.maxResults - session.resultsServed;
     if (remainingResults <= 0)
       throw new AppError("CONFLICT", { errorId: "gm-exploration-results-exhausted" });
-    const edgeClasses = input.relation ? RELATION_EDGE_CLASSES[input.relation] : undefined;
     const expansion = await expandMemoryNeighborhood(db, {
       workspaceId: input.workspaceId,
       seeds: [anchorNode],
@@ -250,10 +263,12 @@ export async function redirectMemoryStep(
     const remainingResults = session.maxResults - session.resultsServed;
     if (remainingResults <= 0)
       throw new AppError("CONFLICT", { errorId: "gm-exploration-results-exhausted" });
-    const seeds = await createTrgmSimilarityIndex(db).findSeeds(
-      input.workspaceId,
-      query,
-      Math.min(remainingResults, 50),
+    const seeds = onlySkillSeeds(
+      await createTrgmSimilarityIndex(db).findSeeds(
+        input.workspaceId,
+        query,
+        Math.min(remainingResults, 50),
+      ),
     );
     const items = await serveCitations(
       tx,
@@ -496,7 +511,7 @@ async function serveCitations(
   });
   const already = new Set(served.map((row) => `${row.kind}:${row.targetId}`));
   const fresh = seeds
-    .filter((seed) => !already.has(`${seed.kind}:${seed.id}`))
+    .filter((seed) => seed.kind === "skill" && !already.has(`${seed.kind}:${seed.id}`))
     .slice(0, maxServe)
     .map((seed) => ({
       sessionId,
@@ -528,8 +543,9 @@ async function serveNodes(
   nodes: ExpansionNode[],
   step: number,
 ): Promise<MemoryCitation[]> {
-  const snippets = await snippetsFor(tx, session.workspaceId, nodes);
-  const seeds: MemorySeed[] = nodes
+  const visible = nodes.filter((node) => !isRetiredFromMemoryDiscovery(node.kind));
+  const snippets = await snippetsFor(tx, session.workspaceId, visible);
+  const seeds: MemorySeed[] = visible
     .filter((node) => snippets.has(`${node.kind}:${node.id}`))
     .map((node) => ({
       kind: node.kind,
@@ -617,6 +633,10 @@ function stepPayload(
   remainingSteps: number,
 ): StepPayload {
   return { state, items, remainingSteps };
+}
+
+function onlySkillSeeds(seeds: MemorySeed[]): MemorySeed[] {
+  return seeds.filter((seed) => seed.kind === "skill");
 }
 
 function parseCitationId(citationId: string): { kind: MemoryCitationKind; id: string } {

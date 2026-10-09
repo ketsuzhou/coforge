@@ -1,6 +1,7 @@
 import type { PrismaClient } from "../../../generated/client";
 import { AppError } from "../../lib/app-error";
 import { ACTIVE_AGENT_WHERE } from "../agents/active-agent.server";
+import { assertOfferTargets } from "./memory-discovery-eligibility";
 import { requireMemoryExplorer } from "./memory-exploration.server";
 
 /**
@@ -11,9 +12,13 @@ import { requireMemoryExplorer } from "./memory-exploration.server";
  * visible:
  *
  * - sender fence: only the designated Memory Agent may publish;
- * - per-target cooldown: the same target (Insight or LearnedSkill revision)
- *   is not delivered to the same Agent within 7 days;
+ * - per-target cooldown: the same SkillRevision is not delivered to the same
+ *   Agent within 7 days;
  * - an explicit @-ask bypasses the cooldown and the bypass is recorded;
+ * - idempotent replay of a historical operation returns the recorded
+ *   delivery before any new-publication check. A new offer that names an
+ *   Insight is then refused with retired_from_memory_discovery, and
+ *   explicitAsk does not revive it;
  * - all-or-none: the message, the structured mention row that routes it, the
  *   wake delivery, and the cooldown records commit in one transaction.
  *
@@ -65,6 +70,7 @@ export async function publishMemoryOffer(
 
   const replay = await replayPublishedOffer(db, input, targets);
   if (replay) return replay;
+  assertOfferTargets(targets.map((target) => target.kind));
 
   const channel = await db.conversation.findFirst({
     where: { id: input.conversationId, workspaceId: input.workspaceId, channelName: { not: null } },

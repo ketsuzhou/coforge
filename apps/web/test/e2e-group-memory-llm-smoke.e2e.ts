@@ -211,46 +211,42 @@ if (!API_KEY) {
         seeds: start.items.map((item) => item.citationId),
       }),
     );
-    expect(start.items.length).toBeGreaterThan(0);
-    const anchor = start.items[0]!;
-    const step = await exploreMemoryStep(db, {
-      workspaceId: workspace.id,
-      agentId: enabled.agentId,
-      sessionId: start.sessionId,
-      operationId: "smoke-explore-1",
-      anchor: anchor.citationId,
-    });
-    const closed = await closeMemoryExploration(db, {
-      workspaceId: workspace.id,
-      agentId: enabled.agentId,
-      sessionId: start.sessionId,
-      operationId: "smoke-close-1",
-      found: true,
-      summary: "The team learned to migrate first and deploy in quiet windows",
-      citationIds: [anchor.citationId, ...step.items.map((item) => item.citationId)].slice(0, 3),
-    });
-    expect(closed.state).toBe("closed");
-
-    // Offer: the human's own question agent is... the human; gate with an
-    // explicit ask (the smoke channel has only humans besides the explorer).
-    const offered = await publishMemoryOffer(db, {
-      workspaceId: workspace.id,
-      memoryAgentId: enabled.agentId,
-      conversationId: channel.id,
-      targetAgentId: enabled.agentId,
-      targets: start.items
-        .filter((i) => i.kind === "insight")
-        .map((i) => ({ kind: "insight" as const, id: i.id }))
-        .slice(0, 3),
-      body: `@Memory smoke: distilled lessons from the hotfix retrospective (${insights} insights)`,
-      operationKey: `smoke-offer-${suffix}`,
-      explicitAsk: true,
-    });
-    expect(offered.published).toBe(true);
-    if (!offered.published) throw new Error("expected the smoke offer to publish");
-    console.log(
-      JSON.stringify({ event: "group_memory_smoke.offer", message_id: offered.messageId }),
-    );
+    expect(start.items.every((item) => item.kind === "skill")).toBe(true);
+    const anchor = start.items.find((item) => item.kind === "skill");
+    if (anchor) {
+      const step = await exploreMemoryStep(db, {
+        workspaceId: workspace.id,
+        agentId: enabled.agentId,
+        sessionId: start.sessionId,
+        operationId: "smoke-explore-1",
+        anchor: anchor.citationId,
+      });
+      const closed = await closeMemoryExploration(db, {
+        workspaceId: workspace.id,
+        agentId: enabled.agentId,
+        sessionId: start.sessionId,
+        operationId: "smoke-close-1",
+        found: true,
+        summary: "The team learned to migrate first and deploy in quiet windows",
+        citationIds: [anchor.citationId, ...step.items.map((item) => item.citationId)].slice(0, 3),
+      });
+      expect(closed.state).toBe("closed");
+      const offered = await publishMemoryOffer(db, {
+        workspaceId: workspace.id,
+        memoryAgentId: enabled.agentId,
+        conversationId: channel.id,
+        targetAgentId: enabled.agentId,
+        targets: [{ kind: "skill", id: anchor.id }],
+        body: `@Memory smoke: published skill from the hotfix retrospective (${insights} stored insights)`,
+        operationKey: `smoke-offer-${suffix}`,
+        explicitAsk: true,
+      });
+      expect(offered.published).toBe(true);
+      if (!offered.published) throw new Error("expected the smoke offer to publish");
+      console.log(
+        JSON.stringify({ event: "group_memory_smoke.offer", message_id: offered.messageId }),
+      );
+    }
 
     // Degradation red line (ADR 0053-E analog on the API boundary): an
     // undesigned caller is refused without touching memory — the "turn"
